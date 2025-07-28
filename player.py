@@ -10,6 +10,8 @@ from multiprocessing import Pool
 
 import librosa
 import numpy
+import scipy
+import sklearn
 import soundcard
 from PIL import Image
 
@@ -55,10 +57,85 @@ def timbre(y):
     return numpy.linalg.inv(t) @ s
 
 
-def analyze(buffers):
-    with Pool() as p:
-        timbres = numpy.array(p.map(timbre, buffers)).T
-    return librosa.segment.recurrence_matrix(timbres, width=4, mode='affinity')
+def get_track_segments(filename, sample_rate):
+    # https://librosa.org/librosa_gallery/auto_examples/plot_segmentation.html#sphx-glr-auto-examples-plot-segmentation-py
+    bins_per_octave = 12 * 3
+    n_octaves = 7
+
+    y_mono, _ = librosa.load(filename, sr=sample_rate)
+    _, beats = librosa.beat.beat_track(y=y_mono, sr=sample_rate, trim=False)
+    cqt = librosa.cqt(
+            y=y_mono,
+            sr=sample_rate,
+            bins_per_octave=bins_per_octave,
+            n_bins=n_octaves * bins_per_octave,
+        )
+    C = librosa.amplitude_to_db(numpy.abs(cqt), ref=numpy.max)
+    Csync = librosa.util.sync(C, beats, aggregate=numpy.median)
+
+    R = librosa.segment.recurrence_matrix(Csync, width=3, mode='affinity', sym=True)
+    df = librosa.segment.timelag_filter(scipy.ndimage.median_filter)
+    Rf = df(R, size=(1, 7))
+
+    mfcc = librosa.feature.mfcc(y=y_mono, sr=sample_rate)
+    Msync = librosa.util.sync(mfcc, beats)
+
+    path_distance = numpy.sum(numpy.diff(Msync, axis=1) ** 2, axis=0)
+    sigma = numpy.median(path_distance)
+    path_sim = numpy.exp(-path_distance / sigma)
+
+    R_path = numpy.diag(path_sim, k=1) + numpy.diag(path_sim, k=-1)
+
+    deg_path = numpy.sum(R_path, axis=1)
+    deg_rec = numpy.sum(Rf, axis=1)
+
+    mu = deg_path.dot(deg_path + deg_rec) / numpy.sum((deg_path + deg_rec) ** 2)
+
+    A = mu * Rf + (1 - mu) * R_path
+
+    L = scipy.sparse.csgraph.laplacian(A, normed=True)
+
+    _, evecs = scipy.linalg.eigh(L)
+
+    evecs = scipy.ndimage.median_filter(evecs, size=(9, 1))
+
+    Cnorm = numpy.cumsum(evecs**2, axis=1) ** 0.5
+
+    k = 5
+
+    X = evecs[:, :k] / Cnorm[:, k - 1 : k]
+
+    KM = sklearn.cluster.KMeans(n_clusters=k)
+
+    seg_ids = KM.fit_predict(X)
+
+    bound_beats = 1 + numpy.flatnonzero(seg_ids[:-1] != seg_ids[1:])
+    bound_beats = librosa.util.fix_frames(bound_beats, x_min=0)
+    bound_segs = list(seg_ids[bound_beats])
+
+    segments = {}
+    for label, beat in zip(bound_segs, bound_beats):
+        if label not in segments:
+            segments[label] = []
+        segments[label].append(beat.item())
+
+    discard = [label for label in segments if not segments[label]]
+    for label in discard:
+        del segments[label]
+
+    ordered = sorted(segments.values(), key=lambda sublist: sorted(sublist))
+    segments = dict(enumerate(ordered))
+
+    return beats, segments
+
+
+def jumps_from_segments(n, segments):
+    jumps = numpy.eye(n)
+
+    for frames in segments.values():
+        jumps[numpy.ix_(frames, frames)] = 1.0
+
+    return numpy.abs(jumps)
 
 
 def load(filename, *, force=False):
@@ -67,30 +144,24 @@ def load(filename, *, force=False):
     path_inf = Path(filename + '.inf')
     if not force and path_inf.exists():
         with gzip.open(path_inf, 'rb') as fh:
-            beat_samples, jumps = pickle.load(fh)
+            beat_frames, segments = pickle.load(fh)
     else:
         print('Analyzing…')
-        y_mono, _ = librosa.load(filename, sr=sample_rate)
-        tempo, beat_samples = librosa.beat.beat_track(
-            y=y_mono, sr=sample_rate, units='samples'
-        )
-        buffers_mono = compute_buffers(y_mono, beat_samples)
-        jumps = analyze(buffers_mono)
-
+        beat_frames, segments = get_track_segments(filename, sample_rate)
         with gzip.open(path_inf, 'wb') as fh:
-            pickle.dump((beat_samples, jumps), fh)
+            pickle.dump((beat_frames, segments), fh)
 
-    return compute_buffers(y, beat_samples), sample_rate, jumps
+    return compute_buffers(y, beat_frames), sample_rate, segments
 
 
 def enhance(jumps, threshold):
     n = len(jumps)
 
     # beats are more similar if the surrounding beats are similar
-    for _ in range(4):
-        jumps_before = numpy.roll(jumps, (-1, -1), (0, 1))
-        jumps_after = numpy.roll(jumps, (1, 1), (0, 1))
-        jumps = 0.4 * jumps_before + 0.4 * jumps_after + 0.2 * jumps
+    # for _ in range(4):
+    #    jumps_before = numpy.roll(jumps, (-1, -1), (0, 1))
+    #    jumps_after = numpy.roll(jumps, (1, 1), (0, 1))
+    #    jumps = 0.4 * jumps_before + 0.4 * jumps_after + 0.2 * jumps
 
     # scale
     x_max = jumps.max()
@@ -98,11 +169,9 @@ def enhance(jumps, threshold):
     y_max = x_max ** 0.5
     jumps = (jumps - x_min) / (x_max - x_min) * y_max
     jumps *= jumps > 0
-    jumps += numpy.eye(n)
 
     # privilege jumps back in order to prolong playing
     jumps[:] *= numpy.linspace(numpy.ones(n), numpy.ones(n) * 0.5, n)
-
     return jumps
 
 
@@ -149,7 +218,8 @@ def main():
     args = parse_args()
 
     print('Loading', args.filename)
-    buffers, sample_rate, jumps = load(args.filename, force=args.force)
+    buffers, sample_rate, segments = load(args.filename, force=args.force)
+    jumps = jumps_from_segments(len(buffers), segments)
     jumps = enhance(jumps, args.threshold)
     jump_count = sum(sum(jumps > 0))
 
