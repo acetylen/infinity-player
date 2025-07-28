@@ -193,6 +193,7 @@ def play(buffers, sample_rate, jumps, progress):
     i = 0
     n = len(buffers)
     counts = numpy.zeros(n)
+    jumped = True  # never jump at start of playback
 
     with soundcard.default_speaker().player(samplerate=sample_rate) as sp:
         try:
@@ -201,7 +202,13 @@ def play(buffers, sample_rate, jumps, progress):
                 sp.play(buffers[i])
                 counts[i] += 1
 
-                i = get_next_position(i, jumps, counts)
+                if jumped:  # never jump two beats in a row
+                    i += 1
+                    jumped = False
+                else:
+                    j = get_next_position(i, jumps, counts)
+                    jumped = j != (i + 1)
+                    i = j
                 if i >= n:
                     i = 0
         except KeyboardInterrupt:
