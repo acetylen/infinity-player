@@ -34,8 +34,7 @@ def print_progress(i, n):
     print(s, end='\r')
 
 
-def compute_buffers(y, beat_frames):
-    beat_samples = librosa.frames_to_samples(beat_frames)
+def compute_buffers(y, beat_samples):
     ranges = zip([0, *beat_samples], [*beat_samples, None])
     return [y.T[start:end] for start, end in ranges]
 
@@ -68,18 +67,20 @@ def load(filename, *, force=False):
     path_inf = Path(filename + '.inf')
     if not force and path_inf.exists():
         with gzip.open(path_inf, 'rb') as fh:
-            beat_frames, jumps = pickle.load(fh)
+            beat_samples, jumps = pickle.load(fh)
     else:
         print('Analyzing…')
         y_mono, _ = librosa.load(filename, sr=sample_rate)
-        tempo, beat_frames = librosa.beat.beat_track(y=y_mono, sr=sample_rate)
-        buffers_mono = compute_buffers(y_mono, beat_frames)
+        tempo, beat_samples = librosa.beat.beat_track(
+            y=y_mono, sr=sample_rate, units='samples'
+        )
+        buffers_mono = compute_buffers(y_mono, beat_samples)
         jumps = analyze(buffers_mono)
 
         with gzip.open(path_inf, 'wb') as fh:
-            pickle.dump((beat_frames, jumps), fh)
+            pickle.dump((beat_samples, jumps), fh)
 
-    return compute_buffers(y, beat_frames), sample_rate, jumps
+    return compute_buffers(y, beat_samples), sample_rate, jumps
 
 
 def enhance(jumps, threshold):
