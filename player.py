@@ -21,19 +21,25 @@ with open(BASE_DIR / 'timbre.pickle', 'rb') as fh:
     TIMBRE_PATTERNS = pickle.load(fh)
 
 
-def print_progress(i, n):
-    cols, lines = shutil.get_terminal_size()
-    pos = i * (cols - 5) // n
-    s = ''
-    for x in range(cols - 5):
-        if x == pos:
-            s += '|'
-        elif x < pos:
-            s += '='
-        else:
-            s += '-'
-    s += f' {i:>4}'
-    print(s, end='\r')
+class Progress:
+    def __init__(self, n, segments):
+        self.n = n
+        self.indices = {}
+        for k, v in segments.items():
+            for beat in v:
+                self.indices[beat] = str(k)
+
+    def update(self, i):
+        cols, _ = shutil.get_terminal_size()
+        pos = lambda k: k * (cols - 7) // self.n
+        s = (['='] * pos(i)) + (['-'] * (pos(self.n) - pos(i)))
+        for x in range(self.n):
+            if x == i:
+                s[pos(x)] = '|'
+            elif x in self.indices:
+                s[pos(x)] = self.indices[x]
+
+        print(f'[{"".join(s)}] {i:>4}', end='\r')
 
 
 def compute_buffers(y, beat_samples):
@@ -183,7 +189,7 @@ def get_next_position(i, jumps, counts):
     return j[0] + 1
 
 
-def play(buffers, sample_rate, jumps):
+def play(buffers, sample_rate, jumps, progress):
     i = 0
     n = len(buffers)
     counts = numpy.zeros(n)
@@ -191,9 +197,9 @@ def play(buffers, sample_rate, jumps):
     with soundcard.default_speaker().player(samplerate=sample_rate) as sp:
         try:
             while True:
+                progress.update(i)
                 sp.play(buffers[i])
                 counts[i] += 1
-                print_progress(i, n)
 
                 i = get_next_position(i, jumps, counts)
                 if i >= n:
@@ -219,13 +225,14 @@ def main():
 
     print('Loading', args.filename)
     buffers, sample_rate, segments = load(args.filename, force=args.force)
+    progress = Progress(len(buffers), segments)
     jumps = jumps_from_segments(len(buffers), segments)
     jumps = enhance(jumps, args.threshold)
     jump_count = sum(sum(jumps > 0))
 
     print(f'Detected {jump_count} jump opportunities on {len(buffers)} beats')
     print('Playing… (Press Ctrl-C to stop)')
-    play(buffers, sample_rate, jumps)
+    play(buffers, sample_rate, jumps, progress)
 
 
 if __name__ == '__main__':
