@@ -6,6 +6,7 @@ import pickle
 import random
 import shutil
 from pathlib import Path
+from multiprocessing import Pool
 
 import librosa
 import numpy
@@ -56,7 +57,8 @@ def timbre(y):
 
 
 def analyze(buffers):
-    timbres = numpy.array([timbre(buf) for buf in buffers]).T
+    with Pool() as p:
+        timbres = numpy.array(p.map(timbre, buffers)).T
     return librosa.segment.recurrence_matrix(timbres, width=4, mode='affinity')
 
 
