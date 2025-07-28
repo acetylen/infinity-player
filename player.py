@@ -61,7 +61,7 @@ def analyze(buffers):
 
 
 def load(filename, *, force=False):
-    y, sample_rate = librosa.load(filename, mono=False)
+    y, sample_rate = librosa.load(filename, mono=False, sr=None)
 
     path_inf = Path(filename + '.inf')
     if not force and path_inf.exists():
@@ -69,7 +69,7 @@ def load(filename, *, force=False):
             beat_frames, jumps = pickle.load(fh)
     else:
         print('Analyzing…')
-        y_mono, _ = librosa.load(filename)
+        y_mono, _ = librosa.load(filename, sr=sample_rate)
         tempo, beat_frames = librosa.beat.beat_track(y=y_mono, sr=sample_rate)
         buffers_mono = compute_buffers(y_mono, beat_frames)
         jumps = analyze(buffers_mono)
