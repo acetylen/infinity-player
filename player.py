@@ -20,23 +20,25 @@ with open(BASE_DIR / 'timbre.pickle', 'rb') as fh:
     TIMBRE_PATTERNS = pickle.load(fh)
 
 
+def colorize(k):
+    colors = [31,32,34,93,95,96]
+    return f"\033[{colors[k % len(colors)]}m{k}\033[0m"
+
 class Progress:
     def __init__(self, n, segments):
         self.n = n
         self.indices = {}
         for k, v in segments.items():
             for beat in v:
-                self.indices[beat] = str(k)
+                self.indices[beat] = colorize(k)
 
     def update(self, i):
         cols, _ = shutil.get_terminal_size()
         pos = lambda k: k * (cols - 7) // self.n
         s = (['='] * pos(i)) + (['-'] * (pos(self.n) - pos(i)))
-        for x in range(self.n):
-            if x == i:
-                s[pos(x)] = '|'
-            elif x in self.indices:
-                s[pos(x)] = self.indices[x]
+        s[pos(i)] = '|'
+        for x in self.indices:
+            s[pos(x)] = self.indices[x]
 
         print(f'[{"".join(s)}] {i:>4}', end='\r')
 
