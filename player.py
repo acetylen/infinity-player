@@ -196,7 +196,7 @@ def play(buffers, sample_rate, jumps, progress):
     counts = numpy.zeros(n)
     jumped = True  # never jump at start of playback
 
-    with soundcard.default_speaker().player(samplerate=sample_rate) as sp:
+    with soundcard.default_speaker().player(samplerate=sample_rate, blocksize=8192) as sp:
         try:
             while True:
                 progress.update(i)
