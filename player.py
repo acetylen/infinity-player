@@ -6,7 +6,6 @@ import pickle
 import random
 import shutil
 from pathlib import Path
-from multiprocessing import Pool
 
 import librosa
 import numpy
